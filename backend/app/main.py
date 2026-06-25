@@ -104,8 +104,24 @@ def _collect_case_copa_artifacts(case_dir: str) -> list[dict]:
         })
 
     for root in (PRO_MAS_OUTPUT_ROOT, PRO_MAS_LEGACY_OUTPUT_ROOT):
+        for pdm_path in (
+            root / "pdm" / f"{case_name}_pdm.json",
+            root / "pdm" / f"{case_name}.pdm.json",
+            root / "pdm" / f"{case_name_l}_pdm.json",
+            root / "pdm" / f"{case_name_l}.pdm.json",
+        ):
+            add(pdm_path, root, "pdm", scope="merged")
+        for sql_path in (
+            root / "sql" / "schema.sql",
+            root / "sql" / f"{case_name}.sql",
+            root / "sql" / f"{case_name_l}.sql",
+        ):
+            add(sql_path, root, "pdm", scope="database")
+
         cip_ps_root = root / "cip_ps"
         if not cip_ps_root.exists():
+            if rows:
+                break
             continue
         merged_candidates = [
             cip_ps_root / f"{case_name}.json",
@@ -194,6 +210,12 @@ def _collect_case_project_artifacts(case_dir: str) -> list[dict]:
             root / "pdm" / f"{case_name_l}.pdm.json",
         ):
             add(pdm_path, root, "pdm")
+        for sql_path in (
+            root / "sql" / "schema.sql",
+            root / "sql" / f"{case_name}.sql",
+            root / "sql" / f"{case_name_l}.sql",
+        ):
+            add(sql_path, root, "pdm")
 
         for zip_path in (
             root / "project_code" / f"{case_name}.final.zip",

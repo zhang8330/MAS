@@ -685,7 +685,7 @@ def collect_artifacts(run_id: str) -> tuple[Path | None, list[dict], list[dict],
                 return p
         return None
 
-    # COPA: one PDM + one CIP + one PS only
+    # COPA: PDM includes the domain model JSON and its generated database schema.
     if case_name:
         pdm_path = first_existing([
             output_root / "pdm" / f"{case_name}_pdm.json",
@@ -695,6 +695,14 @@ def collect_artifacts(run_id: str) -> tuple[Path | None, list[dict], list[dict],
         ])
         if pdm_path:
             add_output(pdm_path, "pdm")
+
+        sql_path = first_existing([
+            output_root / "sql" / "schema.sql",
+            output_root / "sql" / f"{case_name}.sql",
+            output_root / "sql" / f"{case_name_l}.sql",
+        ])
+        if sql_path:
+            add_output(sql_path, "pdm")
 
         cip_path = first_existing([
             output_root / "cip_ps" / "cip.json",

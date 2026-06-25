@@ -192,8 +192,8 @@
                           <span>跟踪每个目标文件的 planned / generated / verified 状态。</span>
                         </div>
                         <div class="wm-template-item">
-                          <b>generation_context</b>
-                          <span>汇总 PS、LTM Profile 和当前案例约束，供代码生成阶段使用。</span>
+                          <b>generated_context（运行时）</b>
+                          <span>代码生成阶段会动态汇总已生成文件信息；PS、LTM Profile 和案例约束分别通过 PS、LTM 与 Working Memory 输入进入代码生成。</span>
                         </div>
                       </div>
                     </a-tab-pane>
@@ -1201,6 +1201,7 @@ function metricValue(value) {
 
 function artifactUsage(record) {
   const name = String(record?.rel_path || record?.name || record?.maps_to || '').toLowerCase()
+  if (/schema\.sql$|\/sql\/.*\.sql$/.test(name)) return 'PDM 数据库产物：由问题域模型生成的建表 SQL，展示表结构、字段、主键/外键和约束，可用于检查数据库设计。'
   if (/brd\.md$|businessrequirement|business_requirement/.test(name)) return '业务需求文档：汇总业务目标、范围和干系人诉求，可辅助校准用例与需求边界'
   if (/business_scope/.test(name)) return '业务范围说明：描述系统覆盖与不覆盖的业务边界，用于人工检查需求完整性'
   if (/business_requirements_chapter/.test(name)) return '业务需求章节：展开业务规则和业务目标，可作为 SRS 与 use case 的补充参考'
