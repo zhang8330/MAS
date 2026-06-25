@@ -1,0 +1,17 @@
+{
+  "backend": {
+    "language": [
+      "python"
+    ],
+    "version": [
+      "python3.12",
+      "flask3.1"
+    ]
+  },
+  "frontend": {
+    "language": "vue",
+    "version": [
+      "vue3"
+    ]
+  }
+}

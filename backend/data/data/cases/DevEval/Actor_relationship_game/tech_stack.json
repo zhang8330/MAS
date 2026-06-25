@@ -1,0 +1,16 @@
+{
+  "backend": {
+    "language": [
+      "java"
+    ],
+    "version": [
+      "springboot3"
+    ]
+  },
+  "frontend": {
+    "language": "vue",
+    "version": [
+      "vue3"
+    ]
+  }
+}
