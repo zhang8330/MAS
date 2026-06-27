@@ -310,6 +310,7 @@ def _run_pipeline_in_thread(
             ]
             if int(test_loop or 0) > 0:
                 cmd.extend(["-testloop", str(int(test_loop or 0))])
+            if stage in {"testgen", "ta"} or int(test_loop or 0) > 0:
                 if ta_project_root:
                     cmd.extend(["--ta-project-root", ta_project_root])
             if resolved_case_dir:
@@ -697,22 +698,32 @@ def collect_artifacts(run_id: str) -> tuple[Path | None, list[dict], list[dict],
             add_output(pdm_path, "pdm")
 
         sql_path = first_existing([
-            output_root / "sql" / "schema.sql",
+            output_root / "sql" / f"{case_name}_refined_schema.sql",
+            output_root / "sql" / f"{case_name}_schema.sql",
+            output_root / "sql" / f"{case_name_l}_refined_schema.sql",
+            output_root / "sql" / f"{case_name_l}_schema.sql",
             output_root / "sql" / f"{case_name}.sql",
             output_root / "sql" / f"{case_name_l}.sql",
+            output_root / "sql" / "schema.sql",
         ])
         if sql_path:
             add_output(sql_path, "pdm")
 
         cip_path = first_existing([
-            output_root / "cip_ps" / "cip.json",
             output_root / "cip_ps" / f"{case_name}.json",
             output_root / "cip_ps" / f"{case_name_l}.json",
+            output_root / "cip_ps" / case_name / "cip.json",
+            output_root / "cip_ps" / case_name_l / "cip.json",
+            output_root / "cip_ps" / "cip.json",
         ])
         if cip_path:
             add_output(cip_path, "cip")
 
         ps_path = first_existing([
+            output_root / "cip_ps" / f"{case_name}.json",
+            output_root / "cip_ps" / f"{case_name_l}.json",
+            output_root / "cip_ps" / case_name / "ps.json",
+            output_root / "cip_ps" / case_name_l / "ps.json",
             output_root / "cip_ps" / "ps.json",
         ])
         if ps_path:

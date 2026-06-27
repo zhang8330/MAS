@@ -592,20 +592,93 @@
 
           <div class="stage-section">
             <div class="section-title">输入</div>
-            <a-row :gutter="12" class="metric-row">
-              <a-col :xs="24" :md="6"><a-statistic title="项目代码" :value="caArtifacts.length" /></a-col>
-              <a-col :xs="24" :md="6"><a-statistic title="测试用例" :value="testCaseArtifacts.length" /></a-col>
-              <a-col :xs="24" :md="6"><a-statistic title="修复轮次" :value="Number(form.test_loop || 0)" /></a-col>
-              <a-col :xs="24" :md="6"><a-statistic title="TA Memory" :value="memoryGrouped.ta.length" /></a-col>
+            <a-row :gutter="12" class="repair-input-grid">
+              <a-col :xs="24" :lg="7">
+                <a-card size="small" title="待修复项目" class="asset-card">
+                  <a-select
+                    v-model:value="memoryInput.case_dir"
+                    show-search
+                    :loading="caseLoading"
+                    :options="caseSelectOptions"
+                    placeholder="选择已生成项目代码的 KnoMAS 案例"
+                    style="width: 100%; margin-bottom: 10px"
+                    option-filter-prop="label"
+                    @change="onMemoryCaseChange"
+                  />
+                  <a-space size="small" wrap>
+                    <a-tag v-if="memoryInput.title" color="blue">{{ memoryInput.title }}</a-tag>
+                    <a-tag>项目代码 {{ projectArtifacts.length }}</a-tag>
+                    <a-tag>TA Memory {{ memoryGrouped.ta.length }}</a-tag>
+                  </a-space>
+                </a-card>
+              </a-col>
+              <a-col :xs="24" :lg="11">
+                <a-card size="small" title="测试用例选择" class="asset-card repair-testcase-card">
+                  <div class="repair-testcase-toolbar">
+                    <a-select
+                      v-model:value="repairSelection.test_artifact_id"
+                      allow-clear
+                      show-search
+                      :options="testCaseOptions"
+                      placeholder="选择第 6 步生成或已有的测试用例产物"
+                      style="width: 100%"
+                      option-filter-prop="label"
+                    />
+                    <a-tag color="geekblue">可用测试产物 {{ testCaseArtifacts.length }}</a-tag>
+                  </div>
+                  <div v-if="testCaseArtifacts.length" class="repair-testcase-list">
+                    <button
+                      v-for="item in testCaseArtifacts"
+                      :key="item.artifact_id"
+                      type="button"
+                      class="repair-testcase-item"
+                      :class="{ active: item.artifact_id === selectedTestCaseArtifact?.artifact_id }"
+                      @click="repairSelection.test_artifact_id = item.artifact_id"
+                    >
+                      <span class="repair-testcase-main">
+                        <b>{{ item.rel_path || item.name }}</b>
+                        <small>{{ item.kind || 'test case' }}</small>
+                      </span>
+                      <span class="repair-testcase-actions">
+                        <a-button size="small" type="link" @click.stop="previewArtifact(item)">预览</a-button>
+                      </span>
+                    </button>
+                  </div>
+                  <a-empty v-else description="暂无测试用例，请先在第 6 步生成" class="empty-state compact" />
+                </a-card>
+              </a-col>
+              <a-col :xs="24" :lg="6">
+                <a-card size="small" title="修复参数" class="asset-card">
+                  <a-input-number v-model:value="form.test_loop" :min="0" addon-before="修复轮次" style="width: 100%" />
+                  <a-alert
+                    type="info"
+                    show-icon
+                    message="test_loop 为 0 时只运行测试；大于 0 时基于失败用例反馈迭代修复。"
+                    style="margin-top: 10px"
+                  />
+                </a-card>
+              </a-col>
             </a-row>
-            <a-input-number v-model:value="form.test_loop" :min="0" addon-before="修复轮次" style="width: 180px" />
           </div>
 
           <div class="stage-section action-section">
             <div class="section-title">操作</div>
             <a-space wrap>
-              <a-button :loading="loading && runningStageRequest === 'ta'" @click="submitStageRun('ta', 'repair')">运行测试</a-button>
-              <a-button type="primary" :disabled="Number(form.test_loop || 0) <= 0" :loading="loading && runningStageRequest === 'ta'" @click="submitStageRun('ta', 'repair')">启动迭代修复</a-button>
+              <a-button
+                :disabled="!memoryInput.case_dir || !projectArtifacts.length || !selectedTestCaseArtifact"
+                :loading="loading && runningStageRequest === 'ta'"
+                @click="submitStageRun('ta', 'repair')"
+              >
+                运行测试
+              </a-button>
+              <a-button
+                type="primary"
+                :disabled="!memoryInput.case_dir || !projectArtifacts.length || !selectedTestCaseArtifact || Number(form.test_loop || 0) <= 0"
+                :loading="loading && runningStageRequest === 'ta'"
+                @click="submitStageRun('ta', 'repair')"
+              >
+                启动迭代修复
+              </a-button>
             </a-space>
           </div>
 
@@ -797,7 +870,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, resolveComponent } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, resolveComponent, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { http } from '../api/http'
@@ -935,6 +1008,9 @@ const memoryInput = reactive({
   dataset: '',
   caseName: '',
 })
+const repairSelection = reactive({
+  test_artifact_id: '',
+})
 const modelingOutputs = reactive({
   requirements: { output_dir: '', items: [], key_items: [] },
   architecture: { output_dir: '', items: [], key_items: [] },
@@ -1071,6 +1147,26 @@ const testCaseArtifacts = computed(() => {
   const pattern = /(test|case|pytest|unittest|spec|coverage|测试|用例)/i
   const pool = [...(outputs.value || []), ...(logs.value || []), ...(memory.value || [])]
   return pool.filter((x) => pattern.test(`${x.name || ''} ${x.rel_path || ''} ${x.kind || ''}`))
+})
+const testCaseOptions = computed(() => testCaseArtifacts.value.map((item) => ({
+  label: item.rel_path || item.name,
+  value: item.artifact_id,
+  title: item.rel_path || item.name,
+})))
+const selectedTestCaseArtifact = computed(() => {
+  if (repairSelection.test_artifact_id) {
+    return testCaseArtifacts.value.find((x) => x.artifact_id === repairSelection.test_artifact_id) || null
+  }
+  return testCaseArtifacts.value[0] || null
+})
+watch(testCaseArtifacts, (items) => {
+  if (!items.length) {
+    repairSelection.test_artifact_id = ''
+    return
+  }
+  if (!items.some((x) => x.artifact_id === repairSelection.test_artifact_id)) {
+    repairSelection.test_artifact_id = items[0].artifact_id
+  }
 })
 const repairArtifacts = computed(() => [...(logs.value || []), ...memoryGrouped.value.ta])
 const taMetrics = computed(() => realMetrics.value?.ta || {})
@@ -2448,8 +2544,68 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.55;
 }
+.repair-testcase-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.repair-testcase-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.repair-testcase-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e6eef8;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+.repair-testcase-item:hover {
+  border-color: #8bb7ff;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.08);
+}
+.repair-testcase-item.active {
+  border-color: #2563eb;
+  background: #f6f9ff;
+}
+.repair-testcase-main {
+  min-width: 0;
+}
+.repair-testcase-main b,
+.repair-testcase-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repair-testcase-main b {
+  color: #122033;
+  font-size: 13px;
+  font-weight: 600;
+}
+.repair-testcase-main small {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+}
 @media (max-width: 900px) {
   .wm-template-grid {
+    grid-template-columns: 1fr;
+  }
+  .repair-testcase-toolbar {
     grid-template-columns: 1fr;
   }
 }

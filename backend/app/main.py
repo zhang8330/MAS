@@ -3,6 +3,8 @@ import json
 import mimetypes
 import os
 import subprocess
+import time
+import zipfile
 from collections import deque
 from pathlib import Path
 
@@ -27,6 +29,7 @@ from .services import (
     PRO_MAS_OUTPUT_ROOT,
     PRO_MAS_PYTHON,
     PRO_MAS_ROOT,
+    RUNS_DIR,
     chat_with_llm,
     collect_artifacts,
     create_run,
@@ -112,7 +115,10 @@ def _collect_case_copa_artifacts(case_dir: str) -> list[dict]:
         ):
             add(pdm_path, root, "pdm", scope="merged")
         for sql_path in (
-            root / "sql" / "schema.sql",
+            root / "sql" / f"{case_name}_refined_schema.sql",
+            root / "sql" / f"{case_name}_schema.sql",
+            root / "sql" / f"{case_name_l}_refined_schema.sql",
+            root / "sql" / f"{case_name_l}_schema.sql",
             root / "sql" / f"{case_name}.sql",
             root / "sql" / f"{case_name_l}.sql",
         ):
@@ -131,9 +137,9 @@ def _collect_case_copa_artifacts(case_dir: str) -> list[dict]:
         ]
         for path in merged_candidates:
             add(path, root, "cip_ps", scope="merged")
-        for path in (cip_ps_root / "cip.json", cip_ps_root / case_name / "cip.json", cip_ps_root / case_name_l / "cip.json"):
+        for path in (cip_ps_root / case_name / "cip.json", cip_ps_root / case_name_l / "cip.json"):
             add(path, root, "cip", "cip.json", "merged")
-        for path in (cip_ps_root / "ps.json", cip_ps_root / case_name / "ps.json", cip_ps_root / case_name_l / "ps.json"):
+        for path in (cip_ps_root / case_name / "ps.json", cip_ps_root / case_name_l / "ps.json"):
             add(path, root, "ps", "ps.json", "merged")
         for name in (case_name, case_name_l):
             cip_dir = cip_ps_root / "cip_modules" / name
@@ -147,9 +153,6 @@ def _collect_case_copa_artifacts(case_dir: str) -> list[dict]:
         if not any(x["kind"] == "cip" for x in rows):
             for path in (cip_ps_root / f"{case_name}.json", cip_ps_root / f"{case_name_l}.json"):
                 add(path, root, "cip", f"{path.stem}.merged.json", "merged")
-        if not any(x["kind"] == "ps" for x in rows):
-            for path in (cip_ps_root / "ps.json",):
-                add(path, root, "ps", scope="merged")
         if rows:
             break
 
@@ -211,7 +214,10 @@ def _collect_case_project_artifacts(case_dir: str) -> list[dict]:
         ):
             add(pdm_path, root, "pdm")
         for sql_path in (
-            root / "sql" / "schema.sql",
+            root / "sql" / f"{case_name}_refined_schema.sql",
+            root / "sql" / f"{case_name}_schema.sql",
+            root / "sql" / f"{case_name_l}_refined_schema.sql",
+            root / "sql" / f"{case_name_l}_schema.sql",
             root / "sql" / f"{case_name}.sql",
             root / "sql" / f"{case_name_l}.sql",
         ):
@@ -253,6 +259,130 @@ def _resolve_case_project_artifact(case_dir: str, artifact_id: str) -> tuple[dic
         if path.exists() and path.is_file():
             return target, path
     raise HTTPException(status_code=404, detail="Project artifact file missing")
+
+
+def _first_existing_file(paths: list[Path]) -> Path | None:
+    for path in paths:
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
+def _artifact_brief(path: Path | None, root: Path | None = None) -> dict | None:
+    if not path:
+        return None
+    rel = path.name
+    if root:
+        try:
+            rel = path.relative_to(root).as_posix()
+        except Exception:
+            rel = str(path).replace("\\", "/")
+    return {
+        "name": path.name,
+        "rel_path": rel,
+        "size": path.stat().st_size,
+        "updated_at": path.stat().st_mtime,
+    }
+
+
+def _collect_pdm_sql_process(case_dir: str, run_id: str = "") -> dict:
+    case_name = _case_name_from_dir(case_dir)
+    if not case_name:
+        return {"case_name": "", "steps": [], "log_lines": []}
+    case_name_l = case_name.lower()
+
+    matched_root: Path | None = None
+    pdm_path = sql_path = db_path = backend_sql_path = None
+
+    for root in (PRO_MAS_OUTPUT_ROOT, PRO_MAS_LEGACY_OUTPUT_ROOT):
+        candidate_pdm = _first_existing_file([
+            root / "pdm" / f"{case_name}_pdm.json",
+            root / "pdm" / f"{case_name}.pdm.json",
+            root / "pdm" / f"{case_name_l}_pdm.json",
+            root / "pdm" / f"{case_name_l}.pdm.json",
+        ])
+        candidate_sql = _first_existing_file([
+            root / "sql" / f"{case_name}_refined_schema.sql",
+            root / "sql" / f"{case_name}_schema.sql",
+            root / "sql" / f"{case_name_l}_refined_schema.sql",
+            root / "sql" / f"{case_name_l}_schema.sql",
+            root / "sql" / f"{case_name}.sql",
+            root / "sql" / f"{case_name_l}.sql",
+        ])
+        candidate_db = _first_existing_file([
+            root / "sql" / f"{case_name}.db",
+            root / "sql" / f"{case_name_l}.db",
+        ])
+        candidate_backend_sql = _first_existing_file([
+            root / "project_code" / case_name / "backend" / "src" / "sql" / f"{case_name}_refined_schema.sql",
+            root / "project_code" / case_name / "backend" / "src" / "sql" / f"{case_name}_schema.sql",
+            root / "project_code" / case_name_l / "backend" / "src" / "sql" / f"{case_name_l}_refined_schema.sql",
+            root / "project_code" / case_name_l / "backend" / "src" / "sql" / f"{case_name_l}_schema.sql",
+        ])
+        if candidate_pdm or candidate_sql or candidate_db or candidate_backend_sql:
+            matched_root = root
+            pdm_path = candidate_pdm
+            sql_path = candidate_sql
+            db_path = candidate_db
+            backend_sql_path = candidate_backend_sql
+            break
+
+    def step(title: str, status: str, detail: str, artifact: Path | None = None) -> dict:
+        return {
+            "title": title,
+            "status": status,
+            "detail": detail,
+            "artifact": _artifact_brief(artifact, matched_root) if matched_root else _artifact_brief(artifact),
+        }
+
+    steps = [
+        step(
+            "PDM 问题域模型生成",
+            "done" if pdm_path else "missing",
+            "已生成问题域模型 JSON，作为数据库模型与后续代码生成的结构输入。"
+            if pdm_path else "未找到当前案例对应的 PDM JSON。",
+            pdm_path,
+        ),
+        step(
+            "PDM 转 SQL Schema",
+            "done" if sql_path else "missing",
+            "已根据 PDM 生成当前案例专属建表 SQL。"
+            if sql_path else "未找到当前案例专属 SQL，已避免展示全局 schema.sql 以免串案。",
+            sql_path,
+        ),
+        step(
+            "SQLite Schema 校验",
+            "done" if db_path else ("skipped" if sql_path else "missing"),
+            "已执行 SQL 并生成 SQLite 校验数据库。"
+            if db_path else ("未发现校验数据库，可能该阶段未执行或校验失败。" if sql_path else "没有 SQL 时无法执行数据库校验。"),
+            db_path,
+        ),
+        step(
+            "SQL 纳入项目产物",
+            "done" if backend_sql_path else ("skipped" if sql_path else "missing"),
+            "SQL 已复制到生成项目的 backend/src/sql 目录。"
+            if backend_sql_path else ("未在项目代码目录中发现 SQL 副本。" if sql_path else "没有 SQL 时不会复制到项目目录。"),
+            backend_sql_path,
+        ),
+    ]
+
+    log_lines: list[str] = []
+    if run_id:
+        log_path = get_run_log_path(run_id)
+        if log_path and log_path.exists():
+            keys = ("pdm", "sql", "schema", "sqlite", "database")
+            with log_path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    text = line.rstrip()
+                    if text and any(k in text.lower() for k in keys):
+                        log_lines.append(text)
+            log_lines = log_lines[-80:]
+
+    return {
+        "case_name": case_name,
+        "steps": steps,
+        "log_lines": log_lines,
+    }
 
 
 def _memory_data_root() -> Path:
@@ -308,6 +438,114 @@ def _resolve_case_memory_artifact(case_dir: str, artifact_id: str) -> tuple[dict
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Memory artifact file missing")
     return target, path
+
+
+def _counter_map(rows) -> dict:
+    out: dict[str, int] = {}
+    for row in rows:
+        state = str((row or {}).get("state") or "pending")
+        out[state] = out.get(state, 0) + 1
+    return out
+
+
+def _collect_case_memory_summary(case_dir: str = "") -> dict:
+    case_name = _case_name_from_dir(case_dir)
+    if not case_name:
+        return {
+            "case_name": "",
+            "exists": False,
+            "file_states": {},
+            "method_states": {},
+            "generation_order": [],
+            "wm_file": "",
+        }
+    rows = _collect_case_memory_artifacts(case_dir)
+    wm_row = next((x for x in rows if x.get("kind") == "wm"), None)
+    if not wm_row:
+        return {
+            "case_name": case_name,
+            "exists": False,
+            "file_states": {},
+            "method_states": {},
+            "generation_order": [],
+            "wm_file": "",
+        }
+    _target, path = _resolve_case_memory_artifact(case_dir, wm_row["artifact_id"])
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read Working Memory: {exc}")
+    graph = data.get("project_graph") or {}
+    file_states = graph.get("file_states") or {}
+    method_states = graph.get("method_states") or {}
+    order = graph.get("generation_order") or []
+
+    def normalize_order_item(item):
+        if isinstance(item, dict):
+            return str(item.get("file_path") or item.get("path") or item.get("relative_path") or "")
+        return str(item or "")
+
+    return {
+        "case_name": case_name,
+        "exists": True,
+        "wm_file": path.name,
+        "file_states": _counter_map(file_states.values()),
+        "method_states": _counter_map(method_states.values()),
+        "file_total": len(file_states),
+        "method_total": len(method_states),
+        "generation_order": [x for x in (normalize_order_item(item) for item in order) if x][:12],
+    }
+
+
+def _load_case_wm(case_dir: str) -> tuple[Path, dict]:
+    rows = _collect_case_memory_artifacts(case_dir)
+    wm_row = next((x for x in rows if x.get("kind") == "wm"), None)
+    if not wm_row:
+        raise HTTPException(status_code=404, detail="Working Memory file not found")
+    _target, path = _resolve_case_memory_artifact(case_dir, wm_row["artifact_id"])
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read Working Memory: {exc}")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail="Working Memory root must be an object")
+    data.setdefault("project_graph", {})
+    return path, data
+
+
+def _save_case_wm(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _generation_order_path(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("file_path") or item.get("path") or item.get("relative_path") or "")
+    return str(item or "")
+
+
+def _collect_case_wm_records(case_dir: str = "") -> dict:
+    case_name = _case_name_from_dir(case_dir)
+    path, data = _load_case_wm(case_dir)
+    graph = data.get("project_graph") or {}
+    file_states = graph.get("file_states") or {}
+    method_states = graph.get("method_states") or {}
+    generation_order = graph.get("generation_order") or []
+    return {
+        "case_name": case_name,
+        "wm_file": path.name,
+        "file_states": [
+            {"key": key, **(value or {})}
+            for key, value in file_states.items()
+        ],
+        "method_states": [
+            {"key": key, **(value or {})}
+            for key, value in method_states.items()
+        ],
+        "generation_order": [
+            {"index": index, "file_path": _generation_order_path(item), "raw": item}
+            for index, item in enumerate(generation_order)
+        ],
+    }
 
 
 def _find_case_merged_cip_ps(case_dir: str) -> Path | None:
@@ -620,6 +858,24 @@ def preview_case_copa_artifact(artifact_id: str, case_dir: str) -> ArtifactPrevi
     )
 
 
+@app.put("/api/project/copa-artifacts/{artifact_id}/content")
+def save_case_copa_artifact(artifact_id: str, payload: dict):
+    case_dir = str(payload.get("case_dir") or "")
+    target, path = _resolve_case_copa_artifact(case_dir, artifact_id)
+    allowed_edit_ext = {".json", ".md", ".txt", ".log", ".sql", ".yaml", ".yml"}
+    if path.suffix.lower() not in allowed_edit_ext:
+        raise HTTPException(status_code=400, detail="Edit only supports text-like COPA artifacts")
+    path.write_text(str(payload.get("content") or ""), encoding="utf-8")
+    return {
+        "ok": True,
+        "artifact_id": artifact_id,
+        "name": target["name"],
+        "rel_path": target["rel_path"],
+        "size": path.stat().st_size,
+        "updated_at": path.stat().st_mtime,
+    }
+
+
 @app.get("/api/project/code-artifacts")
 def list_case_project_artifacts(case_dir: str):
     rows = _collect_case_project_artifacts(case_dir)
@@ -628,6 +884,52 @@ def list_case_project_artifacts(case_dir: str):
         "case_name": _case_name_from_dir(case_dir),
         "items": [ArtifactItem(**item) for item in rows],
     }
+
+
+@app.get("/api/project/pdm-sql-process")
+def get_pdm_sql_process(case_dir: str, run_id: str = ""):
+    return _collect_pdm_sql_process(case_dir, run_id)
+
+
+@app.get("/api/project/code-artifacts/download-bundle")
+def download_case_project_artifacts_bundle(case_dir: str):
+    rows = _collect_case_project_artifacts(case_dir)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Project artifacts not found")
+
+    case_name = _case_name_from_dir(case_dir) or "project"
+    bundle_dir = RUNS_DIR / "_downloads"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = bundle_dir / f"{case_name}_project_artifacts_{int(time.time())}.zip"
+
+    used_names: set[str] = set()
+    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for row in rows:
+            try:
+                _target, path = _resolve_case_project_artifact(case_dir, row["artifact_id"])
+            except HTTPException:
+                continue
+            arcname = str(row.get("rel_path") or path.name).replace("\\", "/").strip("/")
+            if arcname.startswith("output/"):
+                arcname = arcname[len("output/"):]
+            if not arcname:
+                arcname = path.name
+            original = arcname
+            counter = 2
+            while arcname in used_names:
+                p = Path(original)
+                arcname = f"{p.stem}_{counter}{p.suffix}"
+                counter += 1
+            used_names.add(arcname)
+            zf.write(path, arcname)
+
+    if not used_names:
+        raise HTTPException(status_code=404, detail="Project artifact files missing")
+    return FileResponse(
+        path=str(bundle_path),
+        filename=f"{case_name}_project_artifacts.zip",
+        media_type="application/zip",
+    )
 
 
 @app.get("/api/project/code-artifacts/{artifact_id}/preview", response_model=ArtifactPreviewResponse)
@@ -656,6 +958,13 @@ def preview_case_project_artifact(artifact_id: str, case_dir: str) -> ArtifactPr
     )
 
 
+@app.get("/api/project/code-artifacts/{artifact_id}/download")
+def download_case_project_artifact(artifact_id: str, case_dir: str):
+    _target, path = _resolve_case_project_artifact(case_dir, artifact_id)
+    media_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    return FileResponse(path=str(path), filename=path.name, media_type=media_type)
+
+
 @app.get("/api/project/memory-artifacts")
 def list_case_memory_artifacts(case_dir: str = ""):
     rows = _collect_case_memory_artifacts(case_dir)
@@ -664,6 +973,80 @@ def list_case_memory_artifacts(case_dir: str = ""):
         "case_name": _case_name_from_dir(case_dir),
         "items": [ArtifactItem(**item) for item in rows],
     }
+
+
+@app.get("/api/project/memory-summary")
+def get_case_memory_summary(case_dir: str = ""):
+    return _collect_case_memory_summary(case_dir)
+
+
+@app.get("/api/project/working-memory/records")
+def get_working_memory_records(case_dir: str = ""):
+    return _collect_case_wm_records(case_dir)
+
+
+@app.put("/api/project/working-memory/records")
+def save_working_memory_record(payload: dict):
+    case_dir = str(payload.get("case_dir") or "")
+    record_type = str(payload.get("record_type") or "").strip()
+    key = str(payload.get("key") or "").strip()
+    record = payload.get("record") or {}
+    if record_type not in {"file", "method", "order"}:
+        raise HTTPException(status_code=400, detail="record_type must be file, method, or order")
+    if not key:
+        raise HTTPException(status_code=400, detail="key is required")
+    if not isinstance(record, dict):
+        raise HTTPException(status_code=400, detail="record must be an object")
+
+    path, data = _load_case_wm(case_dir)
+    graph = data.setdefault("project_graph", {})
+
+    if record_type == "file":
+        rows = graph.setdefault("file_states", {})
+        rows[key] = {
+            "state": str(record.get("state") or "pending"),
+            "fail_count": int(record.get("fail_count") or 0),
+        }
+    elif record_type == "method":
+        rows = graph.setdefault("method_states", {})
+        item = {
+            "state": str(record.get("state") or "pending"),
+        }
+        updated_at = str(record.get("updated_at") or "").strip()
+        if updated_at:
+            item["updated_at"] = updated_at
+        rows[key] = item
+    else:
+        order = graph.setdefault("generation_order", [])
+        existing = [_generation_order_path(item) for item in order]
+        if key not in existing:
+            order.append(key)
+
+    _save_case_wm(path, data)
+    return {"ok": True, "records": _collect_case_wm_records(case_dir), "summary": _collect_case_memory_summary(case_dir)}
+
+
+@app.delete("/api/project/working-memory/records")
+def delete_working_memory_record(case_dir: str, record_type: str, key: str):
+    record_type = str(record_type or "").strip()
+    key = str(key or "").strip()
+    if record_type not in {"file", "method", "order"}:
+        raise HTTPException(status_code=400, detail="record_type must be file, method, or order")
+    if not key:
+        raise HTTPException(status_code=400, detail="key is required")
+
+    path, data = _load_case_wm(case_dir)
+    graph = data.setdefault("project_graph", {})
+    if record_type == "file":
+        (graph.setdefault("file_states", {}) or {}).pop(key, None)
+    elif record_type == "method":
+        (graph.setdefault("method_states", {}) or {}).pop(key, None)
+    else:
+        order = graph.setdefault("generation_order", [])
+        graph["generation_order"] = [item for item in order if _generation_order_path(item) != key]
+
+    _save_case_wm(path, data)
+    return {"ok": True, "records": _collect_case_wm_records(case_dir), "summary": _collect_case_memory_summary(case_dir)}
 
 
 @app.get("/api/project/memory-artifacts/{artifact_id}/preview", response_model=ArtifactPreviewResponse)
